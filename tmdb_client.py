@@ -1,311 +1,65 @@
-<<<<<<< HEAD
+import aiohttp
 import os
-import logging
-import asyncio
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import CommandStart
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import random
 from dotenv import load_dotenv
-from aiohttp import web
-
-import database as db
-import tmdb_client
 
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+TMDB_API_KEY = os.getenv("TMDB_API_KEY")
+TMDB_BASE_URL = "https://api.themoviedb.org/3"
+IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w500"
 
-logging.basicConfig(level=logging.INFO)
-
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
-
-user_current_movie = {}
-
-@dp.message(CommandStart())
-async def cmd_start(message: types.Message):
-    try:
-        await db.add_user(message.from_user.id, message.from_user.username)
-        
-        args = message.text.split()
-        ref_info = ""
-        if len(args) > 1 and args[1].startswith("ref_"):
-            try:
-                inviter_id = int(args[1].replace("ref_", ""))
-                await db.save_invitation(inviter_id, message.from_user.id)
-                ref_info = " (ты пришел по приглашению друга!)"
-            except ValueError:
-                pass
-        
-        welcome_text = (
-            f"👋 Привет, {message.from_user.full_name}{ref_info}!\n\n"
-            f"Устали тратить по часу на споры, какой фильм включить?\n"
-            f"Я помогу найти идеальный вариант за 2 минуты.\n\n"
-            f"👇 Жми на кнопки, чтобы оценивать фильмы. А если вы свайпаете с другом — я покажу ваши совпадения!"
-        )
-        
-        await message.answer(welcome_text)
-        await send_next_movie(message)
-    except Exception as e:
-        logging.error(f"Ошибка в /start: {e}")
-        await message.answer("❌ Произошла ошибка. Попробуй позже.")
-
-async def send_next_movie(message: types.Message):
-    try:
-        movie = await tmdb_client.get_next_movie()
-        
-        if not movie:
-            await message.answer("❌ Не удалось загрузить фильм. Попробуй позже.")
-            return
-        
-        movie_id = await db.save_movie(movie)
-        user_current_movie[message.from_user.id] = movie_id
-        
-        movie_text = (
-            f"🎬 **{movie['title']}** ({movie['year']})\n"
-            f"⭐ Рейтинг: {movie['rating']}\n\n"
-            f"_{movie['description'][:200]}..._"
-        )
-        
-        if movie['poster_url']:
-            await message.answer_photo(
-                photo=movie['poster_url'],
-                caption=movie_text,
-                parse_mode="Markdown",
-                reply_markup=get_swipe_keyboard()
-            )
-        else:
-            await message.answer(
-                movie_text,
-                parse_mode="Markdown",
-                reply_markup=get_swipe_keyboard()
-            )
-    except Exception as e:
-        logging.error(f"Ошибка загрузки фильма: {e}")
-        await message.answer("❌ Не удалось загрузить фильм. Попробуй позже.")
-
-def get_swipe_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="👎 Пропустить", callback_data="swipe_left"),
-            InlineKeyboardButton(text="👍 Нравится", callback_data="swipe_right")
-        ],
-        [
-            InlineKeyboardButton(text="👥 Пригласить друга", callback_data="invite_friend")
-        ]
-    ])
-
-@dp.callback_query(lambda c: c.data in ['swipe_left', 'swipe_right', 'invite_friend'])
-async def process_swipe(callback: types.CallbackQuery):
-    try:
-        user_id = callback.from_user.id
-        movie_id = user_current_movie.get(user_id)
-        
-        if callback.data == 'swipe_left':
-            await callback.answer("Пропущено ❌")
-            if movie_id:
-                await db.save_swipe(user_id, movie_id, "dislike")
-            await callback.message.delete()
-            await send_next_movie(callback.message)
-            
-        elif callback.data == 'swipe_right':
-            await callback.answer("Добавлено в избранное ❤️")
-            if movie_id:
-                await db.save_swipe(user_id, movie_id, "like")
-            await callback.message.delete()
-            await send_next_movie(callback.message)
-            
-        elif callback.data == 'invite_friend':
-            invite_link = f"https://t.me/{bot.username}?start=ref_{user_id}"
-            await callback.message.answer(
-                f"🔗 Отправь эту ссылку другу/партнеру:\n\n`{invite_link}`\n\n"
-                f"Когда он перейдет по ней и тоже поставит ❤️ этому фильму, вы получите мэтч!",
-                parse_mode="Markdown"
-            )
-    except Exception as e:
-        logging.error(f"Ошибка обработки свайпа: {e}")
-        await callback.answer("❌ Произошла ошибка", show_alert=True)
-
-# ==== HTTP-сервер для Render.com ====
-async def health_check(request):
-    return web.Response(text="OK")
-
-async def run_web_server():
-    """Запускает простой HTTP-сервер, чтобы Render видел открытый порт"""
-    app = web.Application()
-    app.router.add_get("/", health_check)
-    app.router.add_get("/health", health_check)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    # Render ожидает порт из переменной окружения PORT
-    port = int(os.getenv("PORT", 10000))
-    site = web.TCPSite(runner, host="0.0.0.0", port=port)
-    await site.start()
-    print(f"🌐 Health check сервер запущен на порту {port}")
-
-async def main():
-    await db.init_db()
+async def get_popular_movies(page: int = 1) -> list:
+    url = f"{TMDB_BASE_URL}/movie/popular"
+    params = {
+        "api_key": TMDB_API_KEY,
+        "language": "ru-RU",
+        "page": page
+    }
     
-    # Запускаем HTTP-сервер параллельно с polling
-    await run_web_server()
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, params=params) as response:
+            if response.status == 200:
+                data = await response.json()
+                return data.get('results', [])
+            else:
+                print(f"❌ Ошибка TMDB API: {response.status}")
+                return []
+
+async def get_movie_details(movie_id: int) -> dict:
+    url = f"{TMDB_BASE_URL}/movie/{movie_id}"
+    params = {
+        "api_key": TMDB_API_KEY,
+        "language": "ru-RU"
+    }
     
-    print("🚀 Бот запущен на Render.com!")
-    await dp.start_polling(bot)
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, params=params) as response:
+            if response.status == 200:
+                data = await response.json()
+                
+                poster_path = data.get('poster_path')
+                poster_url = f"{IMAGE_BASE_URL}{poster_path}" if poster_path else None
+                
+                release_date = data.get('release_date')
+                year = int(release_date[:4]) if release_date and len(release_date) >= 4 else None
+                
+                return {
+                    'tmdb_id': data['id'],
+                    'title': data['title'],
+                    'year': year,
+                    'rating': round(data.get('vote_average', 0), 1),
+                    'poster_url': poster_url,
+                    'description': data.get('overview', 'Описание отсутствует')
+                }
+            else:
+                print(f"❌ Ошибка получения деталей фильма: {response.status}")
+                return None
 
-if __name__ == "__main__":
-    asyncio.run(main())
-=======
-import os
-import logging
-import asyncio
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import CommandStart
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from dotenv import load_dotenv
-from aiohttp import web
-
-import database as db
-import tmdb_client
-
-load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-logging.basicConfig(level=logging.INFO)
-
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
-
-user_current_movie = {}
-
-@dp.message(CommandStart())
-async def cmd_start(message: types.Message):
-    try:
-        await db.add_user(message.from_user.id, message.from_user.username)
-        
-        args = message.text.split()
-        ref_info = ""
-        if len(args) > 1 and args[1].startswith("ref_"):
-            try:
-                inviter_id = int(args[1].replace("ref_", ""))
-                await db.save_invitation(inviter_id, message.from_user.id)
-                ref_info = " (ты пришел по приглашению друга!)"
-            except ValueError:
-                pass
-        
-        welcome_text = (
-            f"👋 Привет, {message.from_user.full_name}{ref_info}!\n\n"
-            f"Устали тратить по часу на споры, какой фильм включить?\n"
-            f"Я помогу найти идеальный вариант за 2 минуты.\n\n"
-            f"👇 Жми на кнопки, чтобы оценивать фильмы. А если вы свайпаете с другом — я покажу ваши совпадения!"
-        )
-        
-        await message.answer(welcome_text)
-        await send_next_movie(message)
-    except Exception as e:
-        logging.error(f"Ошибка в /start: {e}")
-        await message.answer("❌ Произошла ошибка. Попробуй позже.")
-
-async def send_next_movie(message: types.Message):
-    try:
-        movie = await tmdb_client.get_next_movie()
-        
-        if not movie:
-            await message.answer("❌ Не удалось загрузить фильм. Попробуй позже.")
-            return
-        
-        movie_id = await db.save_movie(movie)
-        user_current_movie[message.from_user.id] = movie_id
-        
-        movie_text = (
-            f"🎬 **{movie['title']}** ({movie['year']})\n"
-            f"⭐ Рейтинг: {movie['rating']}\n\n"
-            f"_{movie['description'][:200]}..._"
-        )
-        
-        if movie['poster_url']:
-            await message.answer_photo(
-                photo=movie['poster_url'],
-                caption=movie_text,
-                parse_mode="Markdown",
-                reply_markup=get_swipe_keyboard()
-            )
-        else:
-            await message.answer(
-                movie_text,
-                parse_mode="Markdown",
-                reply_markup=get_swipe_keyboard()
-            )
-    except Exception as e:
-        logging.error(f"Ошибка загрузки фильма: {e}")
-        await message.answer("❌ Не удалось загрузить фильм. Попробуй позже.")
-
-def get_swipe_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="👎 Пропустить", callback_data="swipe_left"),
-            InlineKeyboardButton(text="👍 Нравится", callback_data="swipe_right")
-        ],
-        [
-            InlineKeyboardButton(text="👥 Пригласить друга", callback_data="invite_friend")
-        ]
-    ])
-
-@dp.callback_query(lambda c: c.data in ['swipe_left', 'swipe_right', 'invite_friend'])
-async def process_swipe(callback: types.CallbackQuery):
-    try:
-        user_id = callback.from_user.id
-        movie_id = user_current_movie.get(user_id)
-        
-        if callback.data == 'swipe_left':
-            await callback.answer("Пропущено ❌")
-            if movie_id:
-                await db.save_swipe(user_id, movie_id, "dislike")
-            await callback.message.delete()
-            await send_next_movie(callback.message)
-            
-        elif callback.data == 'swipe_right':
-            await callback.answer("Добавлено в избранное ❤️")
-            if movie_id:
-                await db.save_swipe(user_id, movie_id, "like")
-            await callback.message.delete()
-            await send_next_movie(callback.message)
-            
-        elif callback.data == 'invite_friend':
-            invite_link = f"https://t.me/{bot.username}?start=ref_{user_id}"
-            await callback.message.answer(
-                f"🔗 Отправь эту ссылку другу/партнеру:\n\n`{invite_link}`\n\n"
-                f"Когда он перейдет по ней и тоже поставит ❤️ этому фильму, вы получите мэтч!",
-                parse_mode="Markdown"
-            )
-    except Exception as e:
-        logging.error(f"Ошибка обработки свайпа: {e}")
-        await callback.answer("❌ Произошла ошибка", show_alert=True)
-
-# ==== HTTP-сервер для Render.com ====
-async def health_check(request):
-    return web.Response(text="OK")
-
-async def run_web_server():
-    """Запускает простой HTTP-сервер, чтобы Render видел открытый порт"""
-    app = web.Application()
-    app.router.add_get("/", health_check)
-    app.router.add_get("/health", health_check)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    # Render ожидает порт из переменной окружения PORT
-    port = int(os.getenv("PORT", 10000))
-    site = web.TCPSite(runner, host="0.0.0.0", port=port)
-    await site.start()
-    print(f"🌐 Health check сервер запущен на порту {port}")
-
-async def main():
-    await db.init_db()
+async def get_next_movie(page: int = 1) -> dict:
+    """Получает следующий фильм для свайпа"""
+    movies = await get_popular_movies(page)
+    if not movies:
+        return None
     
-    # Запускаем HTTP-сервер параллельно с polling
-    await run_web_server()
-    
-    print("🚀 Бот запущен на Render.com!")
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
->>>>>>> 5fe92e5f4d8b5396ea52700231e927b889f99ec6
+    random_movie = random.choice(movies)
+    return await get_movie_details(random_movie['id'])
