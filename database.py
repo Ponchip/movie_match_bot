@@ -82,6 +82,11 @@ async def save_user_genre(user_id: int, genre_id: int, genre_name: str):
         )
         await db.commit()
 
+async def clear_user_genres(user_id: int):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("DELETE FROM user_genres WHERE user_id = ?", (user_id,))
+        await db.commit()
+
 async def get_user_genres(user_id: int) -> list:
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(
@@ -128,6 +133,7 @@ async def get_user_likes(user_id: int) -> list:
             SELECT m.tmdb_id, m.title, m.year, m.poster_url
             FROM swipes s JOIN movies m ON s.movie_id = m.id
             WHERE s.user_id = ? AND s.swipe_type = 'like'
+            ORDER BY s.id DESC
         """, (user_id,))
         return await cursor.fetchall()
 
@@ -154,12 +160,37 @@ async def get_user_stats(user_id: int) -> dict:
             stats[row[0]] = row[1]
         return stats
 
-async def get_user_history(user_id: int, limit: int = 10) -> list:
+async def undo_last_swipe(user_id: int) -> dict:
+    """Отменяет последний свайп и возвращает фильм в пул"""
     async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute("""
-            SELECT m.title, m.year, m.poster_url, s.swipe_type, s.created_at
-            FROM swipes s JOIN movies m ON s.movie_id = m.id
-            WHERE s.user_id = ?
-            ORDER BY s.created_at DESC LIMIT ?
-        """, (user_id, limit))
-        return await cursor.fetchall()
+        # Находим последний свайп
+        cursor = await db.execute(
+            "SELECT movie_id, swipe_type FROM swipes WHERE user_id = ? ORDER BY id DESC LIMIT 1", 
+            (user_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        
+        movie_id, swipe_type = row
+        
+        # Удаляем свайп
+        await db.execute("DELETE FROM swipes WHERE user_id = ? AND movie_id = ?", (user_id, movie_id))
+        # Удаляем из показанных, чтобы фильм мог снова выпасть
+        await db.execute("DELETE FROM shown_movies WHERE user_id = ? AND movie_id = ?", (user_id, movie_idZX))
+        await db.commit()
+        
+        # Возвращаем данные о фильме
+        cursor = await db.execute(
+            "SELECT tmdb_id, title, year, poster_url FROM movies WHERE id = ?", (movie_id,)
+        )
+        movie_row = await cursor.fetchone()
+        if movie_row:
+            return {
+                "tmdb_id": movie_row[0],
+                "title": movie_row[1],
+                "year": movie_row[2],
+                "poster_url": movie_row[3],
+                "swipe_type": swipe_type
+            }
+        return None
