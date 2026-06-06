@@ -29,7 +29,6 @@ GENRES = {
     9648: "Детектив", 10749: "Мелодрама", 878: "Фантастика", 53: "Триллер"
 }
 
-# Улучшенное главное меню
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🎬 Свайпать"), KeyboardButton(text="🎭 Жанры")],
@@ -58,7 +57,6 @@ def get_genres_keyboard() -> InlineKeyboardMarkup:
     if row:
         keyboard.append(row)
     
-    # Кнопка сброса внизу
     keyboard.append([InlineKeyboardButton(text="🔄 Сбросить все фильтры", callback_data="genre_reset")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
@@ -80,9 +78,8 @@ async def send_next_movie_to_chat(user_id: int, chat_id: int):
             "tmdb_id": movie['tmdb_id'], 
             "movie_id": movie_id, 
             "movie": movie
-8}
+        }
         
-        # Улучшенный визуал карточки
         movie_text = (
             f"🎬 **{movie['title']}**\n"
             f"📅 {movie['year']}  •  ⭐ **{movie['rating']}/10**\n\n"
@@ -181,7 +178,6 @@ async def cmd_help(message: Message):
     )
     await message.answer(text, parse_mode="Markdown")
 
-# Обработчики кнопок главного меню
 @dp.message(lambda m: m.text == "🎬 Свайпать")
 async def btn_swipe(message: Message):
     await send_next_movie_to_chat(message.from_user.id, message.chat.id)
@@ -250,7 +246,6 @@ async def process_undo(callback: CallbackQuery):
         await callback.answer("⚠️ Нечего отменять!", show_alert=True)
         return
     
-    # Удаляем сообщение со "штампом", чтобы не засорять чат
     try:
         await callback.message.delete()
     except Exception:
@@ -258,11 +253,9 @@ async def process_undo(callback: CallbackQuery):
     
     await callback.answer(f"↩️ Фильм '{undone_movie['title']}' возвращен!")
     
-    # Очищаем кэш и отправляем этот же фильм заново
     if user_id in movie_cache:
         del movie_cache[user_id]
     
-    # Формируем текст для возвращенного фильма
     movie_text = (
         f"🎬 **{undone_movie['title']}**\n"
         f"📅 {undone_movie['year']}  •  ⭐ Рейтинг: N/A\n\n"
@@ -290,7 +283,6 @@ async def process_swipe(callback: CallbackQuery):
     tmdb_id = state['tmdb_id']
     movie_title = state['movie']['title']
     
-    # Определяем действие и текст для истории
     if callback.data == 'swipe_left':
         await db.save_swipe(user_id, movie_id, "dislike")
         await callback.answer("Пропущено 💔")
@@ -300,7 +292,6 @@ async def process_swipe(callback: CallbackQuery):
         await callback.answer("Добавлено в избранное ❤️")
         stamp = "❤️ _Вы лайкнули этот фильм_"
         
-        # Проверяем мэтч с друзьями
         friends = await db.get_friends(user_id)
         matched_friend = None
         for friend_id in friends:
@@ -321,7 +312,6 @@ async def process_swipe(callback: CallbackQuery):
                 parse_mode="Markdown"
             )
     
-    # Обновляем сообщение в истории: добавляем штамп и убираем кнопки
     try:
         if callback.message.caption:
             new_caption = f"{callback.message.caption}\n\n{stamp}"
@@ -332,11 +322,9 @@ async def process_swipe(callback: CallbackQuery):
     except Exception:
         pass 
     
-    # Очищаем кэш
     if user_id in movie_cache:
         del movie_cache[user_id]
     
-    # Отправляем следующий фильм новым сообщением ниже
     await send_next_movie_to_chat(user_id, chat_id)
 
 async def show_matches(user_id: int, chat_id: int):
