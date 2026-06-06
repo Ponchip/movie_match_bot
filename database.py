@@ -161,8 +161,9 @@ async def get_user_stats(user_id: int) -> dict:
         return stats
 
 async def undo_last_swipe(user_id: int) -> dict:
-    """Отменяет последний свайп и возвращает фильм в пул"""
+    """Отменяет последний свайп и возвращает полные данные фильма"""
     async with aiosqlite.connect(DB_NAME) as db:
+        # Находим последний свайп
         cursor = await db.execute(
             "SELECT movie_id, swipe_type FROM swipes WHERE user_id = ? ORDER BY id DESC LIMIT 1", 
             (user_id,)
@@ -173,12 +174,15 @@ async def undo_last_swipe(user_id: int) -> dict:
         
         movie_id, swipe_type = row
         
+        # Удаляем свайп и отметку о показе
         await db.execute("DELETE FROM swipes WHERE user_id = ? AND movie_id = ?", (user_id, movie_id))
         await db.execute("DELETE FROM shown_movies WHERE user_id = ? AND movie_id = ?", (user_id, movie_id))
         await db.commit()
         
+        # Возвращаем ПОЛНЫЕ данные о фильме (включая rating и description)
         cursor = await db.execute(
-            "SELECT tmdb_id, title, year, poster_url FROM movies WHERE id = ?", (movie_id,)
+            "SELECT tmdb_id, title, year, rating, poster_url, description FROM movies WHERE id = ?", 
+            (movie_id,)
         )
         movie_row = await cursor.fetchone()
         if movie_row:
@@ -186,7 +190,9 @@ async def undo_last_swipe(user_id: int) -> dict:
                 "tmdb_id": movie_row[0],
                 "title": movie_row[1],
                 "year": movie_row[2],
-                "poster_url": movie_row[3],
+                "rating": movie_row[3],
+                "poster_url": movie_row[4],
+                "description": movie_row[5],
                 "swipe_type": swipe_type
             }
         return None

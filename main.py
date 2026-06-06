@@ -246,6 +246,7 @@ async def process_undo(callback: CallbackQuery):
         await callback.answer("⚠️ Нечего отменять!", show_alert=True)
         return
     
+    # Удаляем сообщение со "штампом", чтобы не засорять чат
     try:
         await callback.message.delete()
     except Exception:
@@ -253,12 +254,30 @@ async def process_undo(callback: CallbackQuery):
     
     await callback.answer(f"↩️ Фильм '{undone_movie['title']}' возвращен!")
     
-    if user_id in movie_cache:
-        del movie_cache[user_id]
+    # Сохраняем фильм заново в БД (он уже существует, вернётся существующий movie_id)
+    movie_data = {
+        'tmdb_id': undone_movie['tmdb_id'],
+        'title': undone_movie['title'],
+        'year': undone_movie['year'],
+        'rating': undone_movie['rating'] or 0,
+        'poster_url': undone_movie['poster_url'],
+        'description': undone_movie['description'] or ''
+    }
+    movie_id = await db.save_movie(movie_data)
+    await db.mark_movie_shown(user_id, movie_id)
     
+    # ВАЖНО: сохраняем в кэш, чтобы кнопки ❤️/💔 работали!
+    movie_cache[user_id] = {
+        "tmdb_id": undone_movie['tmdb_id'], 
+        "movie_id": movie_id, 
+        "movie": movie_data
+    }
+    
+    # Красивая карточка с полным описанием
     movie_text = (
         f"🎬 **{undone_movie['title']}**\n"
-        f"📅 {undone_movie['year']}  •  ⭐ Рейтинг: N/A\n\n"
+        f"📅 {undone_movie['year']}  •  ⭐ **{undone_movie['rating']}/10**\n\n"
+        f"📝 {undone_movie['description'][:250]}{'...' if len(undone_movie['description']) > 250 else ''}\n\n"
         f"↩️ *Вы вернули этот фильм. Оцените его снова!*"
     )
     
