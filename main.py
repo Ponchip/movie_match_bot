@@ -234,6 +234,7 @@ async def process_genre(callback: CallbackQuery):
 @dp.callback_query(lambda c: c.data in ['swipe_left', 'swipe_right'])
 async def process_swipe(callback: CallbackQuery):
     user_id = callback.from_user.id
+    chat_id = callback.message.chat.id
     state = movie_cache.get(user_id)
     
     if not state:
@@ -243,16 +244,20 @@ async def process_swipe(callback: CallbackQuery):
     movie_id = state['movie_id']
     tmdb_id = state['tmdb_id']
     
+    # Удаляем старое сообщение с фильмом
     try:
         await callback.message.delete()
     except Exception:
         pass
     
+    # Сохраняем свайп
     if callback.data == 'swipe_left':
         await db.save_swipe(user_id, movie_id, "dislike")
         await callback.answer("Пропущено ❌")
     else:
         await db.save_swipe(user_id, movie_id, "like")
+        
+        # Проверяем мэтч с друзьями
         friends = await db.get_friends(user_id)
         matched_friend = None
         for friend_id in friends:
@@ -260,10 +265,12 @@ async def process_swipe(callback: CallbackQuery):
             if any(m[0] == tmdb_id for m in mutual):
                 matched_friend = friend_id
                 break
+        
         if matched_friend:
             friend_name = await db.get_username_by_id(matched_friend)
             await callback.answer(f"🔥 МЭТЧ! {friend_name} тоже лайкнул!", show_alert=True)
-            await callback.message.answer(
+            await bot.send_message(
+                chat_id,
                 f"🔥 **МЭТЧ!**\n\nТы и {friend_name} оба лайкнули этот фильм! "
                 f"Отличный выбор для совместного просмотра 🍿",
                 parse_mode="Markdown"
@@ -271,9 +278,49 @@ async def process_swipe(callback: CallbackQuery):
         else:
             await callback.answer("Добавлено в избранное ❤️")
     
+    # Очищаем кэш
     if user_id in movie_cache:
         del movie_cache[user_id]
-    await send_next_movie(callback.message)
+    
+    # Отправляем следующий фильм напрямую в чат
+    await send_next_movie_to_chat(user_id, chat_id)
+
+async def send_next_movie_to_chat(user_id: int, chat_id: int):
+    """Отправляет следующий фильм напрямую в чат"""
+    try:
+        shown_ids = await db.get_shown_tmdb_ids(user_id)
+        user_genres = await db.get_user_genres(user_id)
+        genre_ids = [g[0] for g in user_genres] if user_genres else None
+        
+        movie = await tmdb_client.get_next_movie(exclude_tmdb_ids=shown_ids, genre_ids=genre_ids)
+        if not movie:
+            await bot.send_message(chat_id, "❌ Фильмы закончились. Выбери другие жанры (/genres).")
+            return
+        
+        movie_id = await db.save_movie(movie)
+        await db.mark_movie_shown(user_id, movie_id)
+        
+        movie_cache[user_id] = {
+            "tmdb_id": movie['tmdb_id'], 
+            "movie_id": movie_id, 
+            "movie": movie
+        }
+        
+        movie_text = (
+            f"🎬 **{movie['title']}** ({movie['year']})\n"
+            f"⭐ Рейтинг: {movie['rating']}\n\n"
+            f"_{movie['description'][:200]}..._"
+        )
+        
+        if movie['poster_url']:
+            await bot.send_photo(chat_id, movie['poster_url'], caption=movie_text,
+                                 parse_mode="Markdown", reply_markup=get_swipe_keyboard())
+        else:
+            await bot.send_message(chat_id, movie_text, parse_mode="Markdown",
+                                   reply_markup=get_swipe_keyboard())
+    except Exception as e:
+        logging.error(f"Ошибка загрузки фильма: {e}")
+        await bot.send_message(chat_id, "❌ Ошибка загрузки. Попробуй позже.")
 
 async def show_matches(user_id: int, chat_id: int):
     friends = await db.get_friends(user_id)
