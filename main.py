@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Переименовал user_state в movie_cache, чтобы избежать конфликта с FSM
+# Используем movie_cache вместо user_state для избежания конфликта с FSM
 movie_cache = {}
 
 GENRES = {
@@ -73,7 +73,6 @@ async def send_next_movie(target):
         movie_id = await db.save_movie(movie)
         await db.mark_movie_shown(user_id, movie_id)
         
-        # Используем movie_cache вместо user_state
         movie_cache[user_id] = {
             "tmdb_id": movie['tmdb_id'], 
             "movie_id": movie_id, 
@@ -235,7 +234,7 @@ async def process_genre(callback: CallbackQuery):
 @dp.callback_query(lambda c: c.data in ['swipe_left', 'swipe_right'])
 async def process_swipe(callback: CallbackQuery):
     user_id = callback.from_user.id
-    state = movie_cache.get(user_id)  # Используем movie_cache
+    state = movie_cache.get(user_id)
     
     if not state:
         await callback.answer("⏳ Нажми 🎬 Свайпать", show_alert=True)
@@ -272,7 +271,7 @@ async def process_swipe(callback: CallbackQuery):
         else:
             await callback.answer("Добавлено в избранное ❤️")
     
-    if user_id in movie_cache:  # Используем movie_cache
+    if user_id in movie_cache:
         del movie_cache[user_id]
     await send_next_movie(callback.message)
 

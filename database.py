@@ -28,7 +28,7 @@ async def add_user(user_id: int, username: str):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
             "INSERT OR IGNORE INTO users (id, username, created_at) VALUES (?, ?, ?)",
-            (user_id, username, datetime.now().isoformat())
+            (user_id, username or "unknown", datetime.now().isoformat())
         )
         await db.commit()
 
@@ -36,8 +36,8 @@ async def save_movie(movie_data: dict) -> int:
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""INSERT OR IGNORE INTO movies 
             (tmdb_id, title, year, rating, poster_url, description) VALUES (?, ?, ?, ?, ?, ?)""",
-            (movie_data['tmdb_id'], movie_data['title'], movie_data['year'], 
-             movie_data['rating'], movie_data['poster_url'], movie_data['description']))
+            (movie_data['tmdb_id'], movie_data['title'], movie_data.get('year'), 
+             movie_data.get('rating', 0), movie_data.get('poster_url'), movie_data.get('description', '')))
         await db.commit()
         cursor = await db.execute("SELECT id FROM movies WHERE tmdb_id = ?", (movie_data['tmdb_id'],))
         row = await cursor.fetchone()
