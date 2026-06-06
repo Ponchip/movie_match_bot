@@ -9,8 +9,6 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton
 )
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from dotenv import load_dotenv
 from aiohttp import web
 
@@ -24,9 +22,8 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# FSM для надежного хранения состояния свайпа
-class SwipeState(StatesGroup):
-    waiting_for_swipe = State()
+# Переименовал user_state в movie_cache, чтобы избежать конфликта с FSM
+movie_cache = {}
 
 GENRES = {
     28: "Боевик", 12: "Приключения", 16: "Мультфильм", 35: "Комедия",
@@ -60,7 +57,9 @@ def get_genres_keyboard() -> InlineKeyboardMarkup:
         keyboard.append(row)
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-async def send_next_movie(user_id: int, chat_id: int, state: FSMContext):
+async def send_next_movie(target):
+    user_id = target.from_user.id
+    chat_id = target.chat.id
     try:
         shown_ids = await db.get_shown_tmdb_ids(user_id)
         user_genres = await db.get_user_genres(user_id)
@@ -74,9 +73,12 @@ async def send_next_movie(user_id: int, chat_id: int, state: FSMContext):
         movie_id = await db.save_movie(movie)
         await db.mark_movie_shown(user_id, movie_id)
         
-        # Сохраняем состояние в FSM вместо словаря в памяти
-        await state.update_data(tmdb_id=movie['tmdb_id'], movie_id=movie_id)
-        await state.set_state(SwipeState.waiting_for_swipe)
+        # Используем movie_cache вместо user_state
+        movie_cache[user_id] = {
+            "tmdb_id": movie['tmdb_id'], 
+            "movie_id": movie_id, 
+            "movie": movie
+        }
         
         movie_text = (
             f"🎬 **{movie['title']}** ({movie['year']})\n"
@@ -97,10 +99,10 @@ async def send_next_movie(user_id: int, chat_id: int, state: FSMContext):
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     await db.add_user(message.from_user.id, message.from_user.username)
+    
     args = message.text.split()
     ref_info = ""
     inviter_id = None
-    
     if len(args) > 1 and args[1].startswith("ref_"):
         try:
             inviter_id = int(args[1].replace("ref_", ""))
@@ -110,18 +112,18 @@ async def cmd_start(message: Message):
                 ref_info = f"\n\n🎉 Ты пришёл по приглашению от {inviter_name}!"
         except ValueError:
             pass
-
+    
     welcome_text = (
         f"👋 Привет, {message.from_user.full_name}!{ref_info}\n\n"
         f"Я помогу тебе и друзьям найти идеальный фильм за 2 минуты.\n\n"
         f"👇 Пользуйся кнопками ниже или командами:"
     )
     await message.answer(welcome_text, reply_markup=MAIN_KEYBOARD)
-
+    
     if inviter_id:
         await show_matches(message.from_user.id, message.chat.id)
     else:
-        await send_next_movie(message.from_user.id, message.chat.id, dp.fsm.storage)
+        await send_next_movie(message)
 
 @dp.message(Command("genres"))
 async def cmd_genres(message: Message):
@@ -151,11 +153,10 @@ async def cmd_history(message: Message):
     if not history:
         await message.answer("📜 История пуста. Начни свайпать! 🎬")
         return
-    
     text = "📜 **Последние 10 фильмов:**\n\n"
     for title, year, poster, swipe_type, created_at in history:
         emoji = "❤️" if swipe_type == "like" else "👎"
-        text += f"{emoji} {title} ({year})\n"
+        text += f"{emoji} **{title}** ({year})\n"
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(Command("random"))
@@ -164,9 +165,8 @@ async def cmd_random(message: Message):
     if not likes:
         await message.answer("❤️ Сначала лайкни несколько фильмов!")
         return
-    
     tmdb_id, title, year, poster = random.choice(likes)
-    text = f"🎲 Случайный фильм из твоих лайков:\n\n🎬 {title} ({year})"
+    text = f"🎲 **Случайный фильм из твоих лайков:**\n\n🎬 {title} ({year})"
     if poster:
         await message.answer_photo(poster, caption=text, parse_mode="Markdown")
     else:
@@ -189,8 +189,8 @@ async def cmd_help(message: Message):
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(lambda m: m.text == "🎬 Свайпать")
-async def btn_swipe(message: Message, state: FSMContext):
-    await send_next_movie(message.from_user.id, message.chat.id, state)
+async def btn_swipe(message: Message):
+    await send_next_movie(message)
 
 @dp.message(lambda m: m.text == "🎭 Жанры")
 async def btn_genres(message: Message):
@@ -232,24 +232,23 @@ async def process_genre(callback: CallbackQuery):
         parse_mode="Markdown"
     )
 
-@dp.callback_query(SwipeState.waiting_for_swipe, lambda c: c.data in ['swipe_left', 'swipe_right'])
-async def process_swipe(callback: CallbackQuery, state: FSMContext):
+@dp.callback_query(lambda c: c.data in ['swipe_left', 'swipe_right'])
+async def process_swipe(callback: CallbackQuery):
     user_id = callback.from_user.id
-    chat_id = callback.message.chat.id
+    state = movie_cache.get(user_id)  # Используем movie_cache
     
-    data = await state.get_data()
-    if not data or 'movie_id' not in data:
+    if not state:
         await callback.answer("⏳ Нажми 🎬 Свайпать", show_alert=True)
         return
-
-    movie_id = data['movie_id']
-    tmdb_id = data['tmdb_id']
-
+    
+    movie_id = state['movie_id']
+    tmdb_id = state['tmdb_id']
+    
     try:
         await callback.message.delete()
     except Exception:
         pass
-
+    
     if callback.data == 'swipe_left':
         await db.save_swipe(user_id, movie_id, "dislike")
         await callback.answer("Пропущено ❌")
@@ -257,27 +256,25 @@ async def process_swipe(callback: CallbackQuery, state: FSMContext):
         await db.save_swipe(user_id, movie_id, "like")
         friends = await db.get_friends(user_id)
         matched_friend = None
-        
         for friend_id in friends:
             mutual = await db.get_mutual_likes(user_id, friend_id)
             if any(m[0] == tmdb_id for m in mutual):
                 matched_friend = friend_id
                 break
-                
         if matched_friend:
-            friend_name = await db.get_username_by_id(matched_friend) 
+            friend_name = await db.get_username_by_id(matched_friend)
             await callback.answer(f"🔥 МЭТЧ! {friend_name} тоже лайкнул!", show_alert=True)
-            await bot.send_message(
-                chat_id,
+            await callback.message.answer(
                 f"🔥 **МЭТЧ!**\n\nТы и {friend_name} оба лайкнули этот фильм! "
                 f"Отличный выбор для совместного просмотра 🍿",
                 parse_mode="Markdown"
             )
         else:
             await callback.answer("Добавлено в избранное ❤️")
-
-    await state.clear()
-    await send_next_movie(user_id, chat_id, state)
+    
+    if user_id in movie_cache:  # Используем movie_cache
+        del movie_cache[user_id]
+    await send_next_movie(callback.message)
 
 async def show_matches(user_id: int, chat_id: int):
     friends = await db.get_friends(user_id)
@@ -285,16 +282,15 @@ async def show_matches(user_id: int, chat_id: int):
         bot_info = await bot.get_me()
         link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
         text = (
-            f"👥 У тебя пока нет друзей в боте.\n\n"
+            f"👥 **У тебя пока нет друзей в боте.**\n\n"
             f"Отправь эту ссылку другу:\n`{link}`\n\n"
             f"Когда он начнёт свайпать — вы сможете сравнивать вкусы! 🔥"
         )
         await bot.send_message(chat_id, text, parse_mode="Markdown")
         return
-        
+    
     total_mutual = 0
     full_text = "🔥 **Твои совпадения с друзьями:**\n\n"
-    
     for friend_id in friends:
         friend_name = await db.get_username_by_id(friend_id)
         mutual = await db.get_mutual_likes(user_id, friend_id)
@@ -306,10 +302,10 @@ async def show_matches(user_id: int, chat_id: int):
             if len(mutual) > 5:
                 full_text += f"  ... и ещё {len(mutual) - 5}\n"
             full_text += "\n"
-
+    
     if total_mutual == 0:
         full_text += "😔 Пока нет совпадений. Свайпайте больше!"
-
+    
     await bot.send_message(chat_id, full_text, parse_mode="Markdown")
 
 async def health_check(request):
@@ -325,20 +321,11 @@ async def run_web_server():
     await site.start()
     print(f"🌐 Health check сервер запущен на порту {port}")
 
-async def on_startup():
+async def main():
     await db.init_db()
     await run_web_server()
     bot_info = await bot.get_me()
     print(f"🚀 Бот @{bot_info.username} запущен!")
-
-async def on_shutdown():
-    await db.close_db()
-    await tmdb_client.close_session()
-    await bot.session.close()
-
-async def main():
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
