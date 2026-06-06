@@ -29,6 +29,10 @@ GENRES = {
     9648: "Детектив", 10749: "Мелодрама", 878: "Фантастика", 53: "Триллер"
 }
 
+# Разделители для красивого форматирования
+DIVIDER = "━━━━━━━━━━━━━━━━━━━━━━"
+THIN_DIVIDER = "──────────────────────"
+
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🎬 Свайпать"), KeyboardButton(text="🎭 Жанры")],
@@ -56,9 +60,48 @@ def get_genres_keyboard() -> InlineKeyboardMarkup:
             row = []
     if row:
         keyboard.append(row)
-    
     keyboard.append([InlineKeyboardButton(text="🔄 Сбросить все фильтры", callback_data="genre_reset")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def format_movie_card(movie: dict, show_undo_hint: bool = False) -> str:
+    """Форматирует красивую карточку фильма"""
+    title = movie.get('title', 'Без названия')
+    year = movie.get('year') or '—'
+    rating = movie.get('rating') or 0
+    genres = movie.get('genres', [])
+    description = movie.get('description', '')
+    
+    # Обрезаем описание до 300 символов
+    if len(description) > 300:
+        description = description[:300].rsplit(' ', 1)[0] + '...'
+    
+    # Формируем строку жанров
+    genres_str = " • ".join(genres[:4]) if genres else "не указан"
+    if len(genres) > 4:
+        genres_str += f" +{len(genres) - 4}"
+    
+    # Формируем рейтинг со звездой
+    if rating > 0:
+        rating_str = f"⭐ <b>{rating}/10</b>"
+    else:
+        rating_str = "⭐ <i>нет рейтинга</i>"
+    
+    card = (
+        f"{DIVIDER}\n"
+        f"🎬 <b>{title}</b>\n"
+        f"{THIN_DIVIDER}\n"
+        f"📅 <b>Год:</b> {year}\n"
+        f"{rating_str}\n"
+        f"🎭 <b>Жанры:</b> {genres_str}\n"
+        f"{THIN_DIVIDER}\n"
+        f"📝 <i>{description}</i>\n"
+        f"{DIVIDER}"
+    )
+    
+    if show_undo_hint:
+        card += "\n↩️ <i>Вы вернули этот фильм. Оцените его снова!</i>"
+    
+    return card
 
 async def send_next_movie_to_chat(user_id: int, chat_id: int):
     try:
@@ -68,7 +111,18 @@ async def send_next_movie_to_chat(user_id: int, chat_id: int):
         
         movie = await tmdb_client.get_next_movie(exclude_tmdb_ids=shown_ids, genre_ids=genre_ids)
         if not movie:
-            await bot.send_message(chat_id, "🎬 **Фильмы в этой категории закончились!**\n\nПопробуйте выбрать другие жанры (/genres) или сбросить фильтры.", parse_mode="Markdown")
+            await bot.send_message(
+                chat_id,
+                f"{DIVIDER}\n"
+                f"🎬 <b>Фильмы закончились!</b>\n"
+                f"{THIN_DIVIDER}\n"
+                f"😔 В этой категории больше нет фильмов.\n\n"
+                f"💡 <b>Что делать?</b>\n"
+                f"• Выберите другие жанры: /genres\n"
+                f"• Сбросьте фильтры в меню жанров\n"
+                f"{DIVIDER}",
+                parse_mode="HTML"
+            )
             return
         
         movie_id = await db.save_movie(movie)
@@ -80,21 +134,17 @@ async def send_next_movie_to_chat(user_id: int, chat_id: int):
             "movie": movie
         }
         
-        movie_text = (
-            f"🎬 **{movie['title']}**\n"
-            f"📅 {movie['year']}  •  ⭐ **{movie['rating']}/10**\n\n"
-            f"📝 {movie['description'][:250]}{'...' if len(movie['description']) > 250 else ''}"
-        )
+        movie_text = format_movie_card(movie)
         
         if movie['poster_url']:
             await bot.send_photo(chat_id, movie['poster_url'], caption=movie_text,
-                                 parse_mode="Markdown", reply_markup=get_swipe_keyboard())
+                                 parse_mode="HTML", reply_markup=get_swipe_keyboard())
         else:
-            await bot.send_message(chat_id, movie_text, parse_mode="Markdown",
+            await bot.send_message(chat_id, movie_text, parse_mode="HTML",
                                    reply_markup=get_swipe_keyboard())
     except Exception as e:
         logging.error(f"Ошибка загрузки фильма: {e}")
-        await bot.send_message(chat_id, "❌ Ошибка загрузки. Попробуйте позже.")
+        await bot.send_message(chat_id, f"❌ Ошибка загрузки. Попробуйте позже.\n\n<i>{str(e)[:100]}</i>", parse_mode="HTML")
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
@@ -109,16 +159,22 @@ async def cmd_start(message: Message):
             if inviter_id != message.from_user.id:
                 await db.save_invitation(inviter_id, message.from_user.id)
                 inviter_name = await db.get_username_by_id(inviter_id)
-                ref_info = f"\n\n🎉 *Вы пришли по приглашению от {inviter_name}!*"
+                ref_info = f"\n\n🎉 <i>Вы пришли по приглашению от {inviter_name}!</i>"
         except ValueError:
             pass
     
     welcome_text = (
-        f"👋 **Привет, {message.from_user.full_name}!**{ref_info}\n\n"
-        f"Я помогу тебе и друзьям найти идеальный фильм за 2 минуты.\n\n"
-        f"👇 *Пользуйся кнопками ниже:*"
+        f"{DIVIDER}\n"
+        f"👋 <b>Привет, {message.from_user.full_name}!</b>\n"
+        f"{THIN_DIVIDER}\n"
+        f"Я помогу тебе и друзьям найти идеальный фильм за 2 минуты.{ref_info}\n\n"
+        f"🎬 <b>Как это работает:</b>\n"
+        f"• Свайпай фильмы ❤️ или 💔\n"
+        f"• Пригласи друга и сравнивайте вкусы\n"
+        f"• Находите совпадения и смотрите вместе!\n"
+        f"{DIVIDER}"
     )
-    await message.answer(welcome_text, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
+    await message.answer(welcome_text, parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
     
     if inviter_id:
         await show_matches(message.from_user.id, message.chat.id)
@@ -127,7 +183,14 @@ async def cmd_start(message: Message):
 
 @dp.message(Command("genres"))
 async def cmd_genres(message: Message):
-    await message.answer("🎭 *Выберите любимые жанры (можно несколько):*", parse_mode="Markdown", reply_markup=get_genres_keyboard())
+    await message.answer(
+        f"{DIVIDER}\n"
+        f"🎭 <b>Выберите любимые жанры</b>\n"
+        f"{THIN_DIVIDER}\n"
+        f"Можно выбрать несколько. Бот будет показывать больше фильмов в этих жанрах.\n"
+        f"{DIVIDER}",
+        parse_mode="HTML", reply_markup=get_genres_keyboard()
+    )
 
 @dp.message(Command("matches"))
 async def cmd_matches(message: Message):
@@ -138,45 +201,65 @@ async def cmd_stats(message: Message):
     stats = await db.get_user_stats(message.from_user.id)
     friends = await db.get_friends(message.from_user.id)
     genres = await db.get_user_genres(message.from_user.id)
+    total = stats['like'] + stats['dislike']
+    
     text = (
-        f"📊 **Твоя статистика**\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"❤️ Лайков: **{stats['like']}**\n"
-        f"💔 Пропущено: **{stats['dislike']}**\n"
-        f"👥 Друзей в боте: **{len(friends)}**\n"
-        f"🎭 Активных жанров: **{len(genres)}**"
+        f"{DIVIDER}\n"
+        f"📊 <b>Твоя статистика</b>\n"
+        f"{THIN_DIVIDER}\n"
+        f"❤️ Лайков: <b>{stats['like']}</b>\n"
+        f"💔 Пропущено: <b>{stats['dislike']}</b>\n"
+        f"🎯 Всего оценено: <b>{total}</b>\n"
+        f"{THIN_DIVIDER}\n"
+        f"👥 Друзей в боте: <b>{len(friends)}</b>\n"
+        f"🎭 Активных жанров: <b>{len(genres)}</b>\n"
+        f"{DIVIDER}"
     )
-    await message.answer(text, parse_mode="Markdown")
+    await message.answer(text, parse_mode="HTML")
 
 @dp.message(Command("likes"))
 async def cmd_likes(message: Message):
     likes = await db.get_user_likes(message.from_user.id)
     if not likes:
         await message.answer(
-            "❤️ **Список лайков пуст**\n\n"
-            "Начните свайпать фильмы, и они появятся здесь! 🎬", 
-            parse_mode="Markdown"
+            f"{DIVIDER}\n"
+            f"❤️ <b>Список лайков пуст</b>\n"
+            f"{THIN_DIVIDER}\n"
+            f"😔 Ты ещё ничего не лайкнул.\n\n"
+            f"💡 Нажми <b>🎬 Свайпать</b>, чтобы начать!\n"
+            f"{DIVIDER}",
+            parse_mode="HTML"
         )
         return
     
-    text = "❤️ **Ваши сохраненные фильмы** *(последние 10)*:\n━━━━━━━━━━━━━━━━━━\n"
-    for tmdb_id, title, year, poster in likes[:10]:
-        text += f"🎬 **{title}** ({year})\n"
-    await message.answer(text, parse_mode="Markdown")
+    text = (
+        f"{DIVIDER}\n"
+        f"❤️ <b>Твои сохраненные фильмы</b>\n"
+        f"<i>Последние 10</i>\n"
+        f"{THIN_DIVIDER}\n"
+    )
+    for i, (tmdb_id, title, year, poster) in enumerate(likes[:10], 1):
+        text += f"<b>{i}.</b> 🎬 {title} ({year or '—'})\n"
+    text += f"{DIVIDER}"
+    await message.answer(text, parse_mode="HTML")
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
     text = (
-        "❓ **Как пользоваться ботом:**\n\n"
-        "🎬 **Свайпать** — получить новую карточку фильма\n"
-        "🎭 **Жанры** — настроить ленту под свои вкусы\n"
-        "❤️ **Мои лайки** — список того, что вам понравилось\n"
-        "📊 **Статистика** — ваша активность в боте\n"
-        "🔥 **Совпадения** — фильмы, которые лайкнули вы и ваш друг\n"
-        "👥 **Пригласить** — отправить ссылку другу для сравнения вкусов\n\n"
-        "💡 *Совет:* Используйте кнопку ↩️, если случайно нажали не ту кнопку!"
+        f"{DIVIDER}\n"
+        f"❓ <b>Как пользоваться ботом</b>\n"
+        f"{THIN_DIVIDER}\n"
+        f"🎬 <b>Свайпать</b> — новая карточка фильма\n"
+        f"🎭 <b>Жанры</b> — настройка ленты\n"
+        f"❤️ <b>Мои лайки</b> — сохраненные фильмы\n"
+        f"📊 <b>Статистика</b> — твоя активность\n"
+        f"🔥 <b>Совпадения</b> — общие фильмы с другом\n"
+        f"👥 <b>Пригласить</b> — ссылка для друга\n"
+        f"{THIN_DIVIDER}\n"
+        f"💡 <b>Совет:</b> используй ↩️, если случайно нажал не ту кнопку!\n"
+        f"{DIVIDER}"
     )
-    await message.answer(text, parse_mode="Markdown")
+    await message.answer(text, parse_mode="HTML")
 
 @dp.message(lambda m: m.text == "🎬 Свайпать")
 async def btn_swipe(message: Message):
@@ -203,11 +286,14 @@ async def btn_invite(message: Message):
     bot_info = await bot.get_me()
     link = f"https://t.me/{bot_info.username}?start=ref_{message.from_user.id}"
     text = (
-        f"🔗 **Ваша персональная ссылка:**\n\n`{link}`\n\n"
-        f"Отправьте её другу. Когда он начнет свайпать — "
-        f"вы сможете сравнивать вкусы и находить совпадения! 🔥"
+        f"{DIVIDER}\n"
+        f"🔗 <b>Твоя персональная ссылка</b>\n"
+        f"{THIN_DIVIDER}\n"
+        f"<code>{link}</code>\n\n"
+        f"📲 Отправь её другу. Когда он начнёт свайпать — вы сможете сравнивать вкусы и находить совпадения! 🔥\n"
+        f"{DIVIDER}"
     )
-    await message.answer(text, parse_mode="Markdown")
+    await message.answer(text, parse_mode="HTML")
 
 @dp.message(lambda m: m.text == "❓ Помощь")
 async def btn_help(message: Message):
@@ -216,10 +302,15 @@ async def btn_help(message: Message):
 @dp.callback_query(lambda c: c.data == "genre_reset")
 async def process_genre_reset(callback: CallbackQuery):
     await db.clear_user_genres(callback.from_user.id)
-    await callback.answer("🔄 Фильтры жанров сброшены!", show_alert=True)
+    await callback.answer("🔄 Фильтры сброшены!", show_alert=True)
     await callback.message.edit_text(
-        "🎭 **Фильтры жанров сброшены!**\n\nТеперь я буду показывать фильмы всех жанров.",
-        parse_mode="Markdown",
+        f"{DIVIDER}\n"
+        f"🎭 <b>Фильтры сброшены!</b>\n"
+        f"{THIN_DIVIDER}\n"
+        f"✅ Теперь я буду показывать фильмы всех жанров.\n\n"
+        f"Выбери новые жанры или нажми <b>🎬 Свайпать</b>.\n"
+        f"{DIVIDER}",
+        parse_mode="HTML",
         reply_markup=get_genres_keyboard()
     )
 
@@ -231,8 +322,14 @@ async def process_genre(callback: CallbackQuery):
     await callback.answer(f"✅ {genre_name} добавлен!")
     
     await callback.message.answer(
-        f"🎭 Жанр **{genre_name}** добавлен! Теперь буду показывать больше таких фильмов.",
-        parse_mode="Markdown"
+        f"{DIVIDER}\n"
+        f"🎭 <b>Жанр добавлен!</b>\n"
+        f"{THIN_DIVIDER}\n"
+        f"✅ <b>{genre_name}</b>\n\n"
+        f"Теперь буду показывать больше таких фильмов.\n"
+        f"👇 Вот следующий:\n"
+        f"{DIVIDER}",
+        parse_mode="HTML"
     )
     await send_next_movie_to_chat(callback.from_user.id, callback.message.chat.id)
 
@@ -246,46 +343,38 @@ async def process_undo(callback: CallbackQuery):
         await callback.answer("⚠️ Нечего отменять!", show_alert=True)
         return
     
-    # Удаляем сообщение со "штампом", чтобы не засорять чат
     try:
         await callback.message.delete()
     except Exception:
         pass
     
-    await callback.answer(f"↩️ Фильм '{undone_movie['title']}' возвращен!")
+    await callback.answer(f"↩️ '{undone_movie['title']}' возвращен!")
     
-    # Сохраняем фильм заново в БД (он уже существует, вернётся существующий movie_id)
     movie_data = {
         'tmdb_id': undone_movie['tmdb_id'],
         'title': undone_movie['title'],
         'year': undone_movie['year'],
         'rating': undone_movie['rating'] or 0,
         'poster_url': undone_movie['poster_url'],
-        'description': undone_movie['description'] or ''
+        'description': undone_movie['description'] or '',
+        'genres': undone_movie.get('genres', [])
     }
     movie_id = await db.save_movie(movie_data)
     await db.mark_movie_shown(user_id, movie_id)
     
-    # ВАЖНО: сохраняем в кэш, чтобы кнопки ❤️/💔 работали!
     movie_cache[user_id] = {
         "tmdb_id": undone_movie['tmdb_id'], 
         "movie_id": movie_id, 
         "movie": movie_data
     }
     
-    # Красивая карточка с полным описанием
-    movie_text = (
-        f"🎬 **{undone_movie['title']}**\n"
-        f"📅 {undone_movie['year']}  •  ⭐ **{undone_movie['rating']}/10**\n\n"
-        f"📝 {undone_movie['description'][:250]}{'...' if len(undone_movie['description']) > 250 else ''}\n\n"
-        f"↩️ *Вы вернули этот фильм. Оцените его снова!*"
-    )
+    movie_text = format_movie_card(movie_data, show_undo_hint=True)
     
     if undone_movie['poster_url']:
         await bot.send_photo(chat_id, undone_movie['poster_url'], caption=movie_text,
-                             parse_mode="Markdown", reply_markup=get_swipe_keyboard())
+                             parse_mode="HTML", reply_markup=get_swipe_keyboard())
     else:
-        await bot.send_message(chat_id, movie_text, parse_mode="Markdown",
+        await bot.send_message(chat_id, movie_text, parse_mode="HTML",
                                reply_markup=get_swipe_keyboard())
 
 @dp.callback_query(lambda c: c.data in ['swipe_left', 'swipe_right'])
@@ -305,11 +394,11 @@ async def process_swipe(callback: CallbackQuery):
     if callback.data == 'swipe_left':
         await db.save_swipe(user_id, movie_id, "dislike")
         await callback.answer("Пропущено 💔")
-        stamp = "💔 _Вы пропустили этот фильм_"
+        stamp = "\n\n💔 <i>Вы пропустили этот фильм</i>"
     else:
         await db.save_swipe(user_id, movie_id, "like")
         await callback.answer("Добавлено в избранное ❤️")
-        stamp = "❤️ _Вы лайкнули этот фильм_"
+        stamp = "\n\n❤️ <i>Вы лайкнули этот фильм</i>"
         
         friends = await db.get_friends(user_id)
         matched_friend = None
@@ -321,23 +410,25 @@ async def process_swipe(callback: CallbackQuery):
         
         if matched_friend:
             friend_name = await db.get_username_by_id(matched_friend)
-            await callback.answer(f"🔥 МЭТЧ! {friend_name} тоже лайкнул!", show_alert=True)
             await bot.send_message(
                 chat_id,
-                f"🔥 **СОВПАДЕНИЕ!**\n\n"
-                f"Вы и **{friend_name}** оба лайкнули:\n"
-                f"🎬 *{movie_title}*\n\n"
-                f"Отличный выбор для совместного просмотра! 🍿",
-                parse_mode="Markdown"
+                f"{DIVIDER}\n"
+                f"🔥 <b>СОВПАДЕНИЕ!</b>\n"
+                f"{THIN_DIVIDER}\n"
+                f"Вы и <b>{friend_name}</b> оба лайкнули:\n\n"
+                f"🎬 <i>{movie_title}</i>\n\n"
+                f"🍿 Отличный выбор для совместного просмотра!\n"
+                f"{DIVIDER}",
+                parse_mode="HTML"
             )
     
     try:
         if callback.message.caption:
-            new_caption = f"{callback.message.caption}\n\n{stamp}"
-            await callback.message.edit_caption(caption=new_caption, reply_markup=None, parse_mode="Markdown")
+            new_caption = callback.message.caption + stamp
+            await callback.message.edit_caption(caption=new_caption, reply_markup=None, parse_mode="HTML")
         else:
-            new_text = f"{callback.message.text}\n\n{stamp}"
-            await callback.message.edit_text(text=new_text, reply_markup=None, parse_mode="Markdown")
+            new_text = callback.message.text + stamp
+            await callback.message.edit_text(text=new_text, reply_markup=None, parse_mode="HTML")
     except Exception:
         pass 
     
@@ -352,31 +443,45 @@ async def show_matches(user_id: int, chat_id: int):
         bot_info = await bot.get_me()
         link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
         text = (
-            f"👥 **У вас пока нет друзей в боте.**\n\n"
-            f"Отправьте эту ссылку другу:\n`{link}`\n\n"
-            f"Когда он начнет свайпать — вы сможете сравнивать вкусы и находить общие фильмы! 🔥"
+            f"{DIVIDER}\n"
+            f"👥 <b>У тебя пока нет друзей в боте</b>\n"
+            f"{THIN_DIVIDER}\n"
+            f"📲 Отправь эту ссылку другу:\n\n"
+            f"<code>{link}</code>\n\n"
+            f"Когда он начнёт свайпать — вы сможете сравнивать вкусы и находить общие фильмы! 🔥\n"
+            f"{DIVIDER}"
         )
-        await bot.send_message(chat_id, text, parse_mode="Markdown")
+        await bot.send_message(chat_id, text, parse_mode="HTML")
         return
     
     total_mutual = 0
-    full_text = "🔥 **Ваши совпадения с друзьями:**\n━━━━━━━━━━━━━━━━━━\n"
+    full_text = (
+        f"{DIVIDER}\n"
+        f"🔥 <b>Твои совпадения с друзьями</b>\n"
+        f"{THIN_DIVIDER}\n"
+    )
+    
+    has_any_mutual = False
     for friend_id in friends:
         friend_name = await db.get_username_by_id(friend_id)
         mutual = await db.get_mutual_likes(user_id, friend_id)
         if mutual:
+            has_any_mutual = True
             total_mutual += len(mutual)
-            full_text += f"👤 **{friend_name}** — {len(mutual)} совпадений:\n"
+            full_text += f"\n👤 <b>{friend_name}</b> — {len(mutual)} совпадений:\n"
             for tmdb_id, title, year, poster, rating in mutual[:5]:
-                full_text += f"  🎬 {title} ({year}) ⭐{rating}\n"
+                full_text += f"  🎬 {title} ({year or '—'}) ⭐{rating}\n"
             if len(mutual) > 5:
-                full_text += f"  ... и ещё {len(mutual) - 5}\n"
-            full_text += "\n"
+                full_text += f"  <i>... и ещё {len(mutual) - 5}</i>\n"
     
-    if total_mutual == 0:
-        full_text += "😔 Пока нет совпадений.\n💡 *Свайпайте больше фильмов, чтобы найти общие вкусы!*"
+    if not has_any_mutual:
+        full_text += (
+            "😔 Пока нет совпадений.\n\n"
+            "💡 <i>Свайпайте больше фильмов, чтобы найти общие вкусы!</i>\n"
+        )
     
-    await bot.send_message(chat_id, full_text, parse_mode="Markdown")
+    full_text += f"{DIVIDER}"
+    await bot.send_message(chat_id, full_text, parse_mode="HTML")
 
 async def health_check(request):
     return web.Response(text="OK")
