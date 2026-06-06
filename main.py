@@ -30,7 +30,6 @@ GENRES = {
     9648: "Детектив", 10749: "Мелодрама", 878: "Фантастика", 53: "Триллер"
 }
 
-# Главное меню с возвращенной статистикой
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🎬 Свайпать"), KeyboardButton(text="🎭 Жанры")],
@@ -66,7 +65,7 @@ async def send_next_movie_to_chat(user_id: int, chat_id: int):
         
         movie = await tmdb_client.get_next_movie(exclude_tmdb_ids=shown_ids, genre_ids=genre_ids)
         if not movie:
-            await bot.send_message(chat_id, "❌ Фильмы закончились. Выбери другие жанры (/genres).")
+            await bot.send_message(chat_id, "❌ Фильмы закончились. Выбери другие жанры (/genres) или начни сначала.")
             return
         
         movie_id = await db.save_movie(movie)
@@ -171,7 +170,6 @@ async def cmd_help(message: Message):
     )
     await message.answer(text, parse_mode="Markdown")
 
-# Обработчики кнопок главного меню
 @dp.message(lambda m: m.text == "🎬 Свайпать")
 async def btn_swipe(message: Message):
     await send_next_movie_to_chat(message.from_user.id, message.chat.id)
@@ -233,17 +231,17 @@ async def process_swipe(callback: CallbackQuery):
     movie_id = state['movie_id']
     tmdb_id = state['tmdb_id']
     
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
-    
+    # Определяем действие и текст для истории
     if callback.data == 'swipe_left':
         await db.save_swipe(user_id, movie_id, "dislike")
         await callback.answer("Пропущено 💔")
+        stamp = "💔 _Вы пропустили этот фильм_"
     else:
         await db.save_swipe(user_id, movie_id, "like")
+        await callback.answer("Добавлено в избранное ❤️")
+        stamp = "❤️ _Вы лайкнули этот фильм_"
         
+        # Проверяем мэтч с друзьями
         friends = await db.get_friends(user_id)
         matched_friend = None
         for friend_id in friends:
@@ -261,12 +259,23 @@ async def process_swipe(callback: CallbackQuery):
                 f"Отличный выбор для совместного просмотра 🍿",
                 parse_mode="Markdown"
             )
-        else:
-            await callback.answer("Добавлено в избранное ❤️")
     
+    # Обновляем сообщение в истории: добавляем штамп и убираем кнопки, чтобы нельзя было свайпнуть дважды
+    try:
+        if callback.message.caption:
+            new_caption = f"{callback.message.caption}\n\n{stamp}"
+            await callback.message.edit_caption(caption=new_caption, reply_markup=None, parse_mode="Markdown")
+        else:
+            new_text = f"{callback.message.text}\n\n{stamp}"
+            await callback.message.edit_text(text=new_text, reply_markup=None, parse_mode="Markdown")
+    except Exception:
+        pass # Игнорируем ошибки редактирования (например, если сообщение уже было изменено)
+    
+    # Очищаем кэш
     if user_id in movie_cache:
         del movie_cache[user_id]
     
+    # Отправляем следующий фильм новым сообщением ниже
     await send_next_movie_to_chat(user_id, chat_id)
 
 async def show_matches(user_id: int, chat_id: int):
