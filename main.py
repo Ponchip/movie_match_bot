@@ -30,17 +30,17 @@ GENRES = {
     9648: "Детектив", 10749: "Мелодрама", 878: "Фантастика", 53: "Триллер"
 }
 
-# Обновленное главное меню
+# Главное меню с возвращенной статистикой
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🎬 Свайпать"), KeyboardButton(text="🎭 Жанры")],
         [KeyboardButton(text="❤️ Мои лайки"), KeyboardButton(text="🔥 Совпадения")],
-        [KeyboardButton(text="👥 Пригласить"), KeyboardButton(text="❓ Помощь")]
+        [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="👥 Пригласить")],
+        [KeyboardButton(text="❓ Помощь")]
     ],
     resize_keyboard=True
 )
 
-# Обновленные кнопки свайпа
 def get_swipe_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❤️ Нравится", callback_data="swipe_right"),
@@ -59,7 +59,6 @@ def get_genres_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 async def send_next_movie_to_chat(user_id: int, chat_id: int):
-    """Отправляет следующий фильм напрямую в чат"""
     try:
         shown_ids = await db.get_shown_tmdb_ids(user_id)
         user_genres = await db.get_user_genres(user_id)
@@ -153,8 +152,7 @@ async def cmd_likes(message: Message):
         await message.answer("❤️ Ты пока ничего не лайкнул. Начни свайпать! 🎬")
         return
     
-    text = "❤️ **Твои сохраненные фильмы:**\n\n"
-    # Берем последние 10 лайков
+    text = "❤️ **Твои сохраненные фильмы (последние 10):**\n\n"
     for tmdb_id, title, year, poster in likes[-10:]:
         text += f"🎬 **{title}** ({year})\n"
     await message.answer(text, parse_mode="Markdown")
@@ -166,6 +164,7 @@ async def cmd_help(message: Message):
         "🎬 **Свайпать** — получить новый фильм\n"
         "🎭 **Жанры** — настроить ленту под себя\n"
         "❤️ **Мои лайки** — список того, что тебе понравилось\n"
+        "📊 **Статистика** — сколько фильмов ты оценил\n"
         "🔥 **Совпадения** — что вы лайкнули с другом\n"
         "👥 **Пригласить** — отправить ссылку другу\n\n"
         "💡 Пригласи друга и сравнивайте вкусы!"
@@ -184,6 +183,10 @@ async def btn_genres(message: Message):
 @dp.message(lambda m: m.text == "❤️ Мои лайки")
 async def btn_likes(message: Message):
     await cmd_likes(message)
+
+@dp.message(lambda m: m.text == "📊 Статистика")
+async def btn_stats(message: Message):
+    await cmd_stats(message)
 
 @dp.message(lambda m: m.text == "🔥 Совпадения")
 async def btn_matches(message: Message):
@@ -211,7 +214,6 @@ async def process_genre(callback: CallbackQuery):
     await db.save_user_genre(callback.from_user.id, genre_id, genre_name)
     await callback.answer(f"✅ {genre_name} добавлен!")
     
-    # Сразу подтверждаем и кидаем фильм, без лишних кнопок
     await callback.message.answer(
         f"🎭 Жанр **{genre_name}** добавлен! Теперь буду показывать больше таких фильмов.",
         parse_mode="Markdown"
@@ -265,7 +267,6 @@ async def process_swipe(callback: CallbackQuery):
     if user_id in movie_cache:
         del movie_cache[user_id]
     
-    # Сразу кидаем следующий фильм
     await send_next_movie_to_chat(user_id, chat_id)
 
 async def show_matches(user_id: int, chat_id: int):
